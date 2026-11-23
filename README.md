@@ -82,17 +82,19 @@ Design choices:
 
 ## Tests
 
-`AccessRequestApiTest` has 7 tests that start the app and call the real URLs:
-create, create with a missing reason, approve, reject without reason, reject with
-reason, deciding twice, and approving an unknown request.
+`AccessRequestApiTest` has 10 tests that start the app and exercise request
+creation and decisions, input validation, registration and sign-in, and profile
+updates.
 
 ## Known gaps (honest list)
 
-- There is no real login. Anyone can pick "Manager" and approve, and names are
-  typed in, so they could be false. A real app would use login (SSO) and check
-  the role on the server.
-- Data is lost when the backend stops, because H2 runs in memory.
-- No paging or filtering of the list, and no frontend tests.
+- Manager accounts can self-register, and the API does not enforce an
+  authenticated session or authorization on request decisions. A production
+  deployment should use trusted identity/role provisioning and server-side
+  authorization.
+- The H2 database is local to this machine; production use should configure a
+  managed database and backups.
+- The request list has no paging, and there are no automated frontend tests.
 - Optional extras (AI risk rating, FastAPI version) are not done.
 
 ## AI tools I used
