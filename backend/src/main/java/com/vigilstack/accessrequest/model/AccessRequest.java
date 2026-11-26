@@ -14,6 +14,8 @@ public class AccessRequest {
 
     private String employeeName;
 
+    private Long requesterId;
+
     @Enumerated(EnumType.STRING)
     @Column(name = "target_system")
     private SystemName system;
@@ -34,8 +36,9 @@ public class AccessRequest {
 
     protected AccessRequest() { }   // needed by JPA
 
-    public AccessRequest(String employeeName, SystemName system, String reason) {
+    public AccessRequest(String employeeName, SystemName system, String reason, Long requesterId) {
         this.employeeName = employeeName;
+        this.requesterId = requesterId;
         this.system = system;
         this.reason = reason;
         this.status = RequestStatus.PENDING;
@@ -64,6 +67,7 @@ public class AccessRequest {
 
     public Long getId() { return id; }
     public String getEmployeeName() { return employeeName; }
+    public Long getRequesterId() { return requesterId; }
     public SystemName getSystem() { return system; }
     public String getReason() { return reason; }
     public RequestStatus getStatus() { return status; }

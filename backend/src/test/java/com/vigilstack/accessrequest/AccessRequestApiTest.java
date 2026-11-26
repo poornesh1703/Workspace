@@ -8,19 +8,35 @@ import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.
 
 import com.fasterxml.jackson.databind.ObjectMapper;
 import org.junit.jupiter.api.Test;
+import org.junit.jupiter.api.BeforeEach;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.boot.test.autoconfigure.web.servlet.AutoConfigureMockMvc;
 import org.springframework.boot.test.context.SpringBootTest;
 import org.springframework.http.MediaType;
 import org.springframework.test.web.servlet.MockMvc;
+import org.springframework.security.test.context.support.WithMockUser;
+import com.vigilstack.accessrequest.model.UserAccount;
+import com.vigilstack.accessrequest.model.UserRole;
+import com.vigilstack.accessrequest.repo.UserAccountRepository;
+import com.vigilstack.accessrequest.service.AccessRequestService;
+import com.vigilstack.accessrequest.model.SystemName;
 
 /** These tests start the whole app and call the real URLs, like the frontend would. */
-@SpringBootTest(properties = "spring.datasource.url=jdbc:h2:mem:accessdb-test")
+@SpringBootTest(properties = {"spring.datasource.url=jdbc:h2:mem:accessdb-test", "app.auth.manager-invite-code=test-manager-invite"})
 @AutoConfigureMockMvc
+@WithMockUser(username = "test.manager@example.com", roles = "MANAGER")
 class AccessRequestApiTest {
 
     @Autowired MockMvc mvc;
     @Autowired ObjectMapper mapper;
+        @Autowired UserAccountRepository users;
+        @Autowired AccessRequestService requestService;
+
+        @BeforeEach
+        void addAuthenticatedManagerAccount() {
+                users.deleteAll();
+                users.save(new UserAccount("test.manager@example.com", "Test Manager", "+14155550000", "not-used-by-mock-auth", UserRole.MANAGER));
+        }
 
     /** Helper: creates a request and returns its id. */
     private long createRequest() throws Exception {
@@ -43,7 +59,7 @@ class AccessRequestApiTest {
                 .andExpect(status().isCreated())
                 .andExpect(jsonPath("$.status").value("PENDING"))
                 .andExpect(jsonPath("$.history[0].action").value("CREATED"))
-                .andExpect(jsonPath("$.history[0].actor").value("Asha"));
+                .andExpect(jsonPath("$.history[0].actor").value("Test Manager"));
     }
 
     @Test
@@ -64,7 +80,7 @@ class AccessRequestApiTest {
                 .andExpect(status().isOk())
                 .andExpect(jsonPath("$.status").value("APPROVED"))
                 .andExpect(jsonPath("$.history[1].action").value("APPROVED"))
-                .andExpect(jsonPath("$.history[1].actor").value("Ravi"));
+                .andExpect(jsonPath("$.history[1].actor").value("Test Manager"));
     }
 
     @Test
@@ -112,7 +128,7 @@ class AccessRequestApiTest {
     @Test
     void registerManager_requiresAndStoresContactDetails_withoutReturningPassword() throws Exception {
         String registration = """
-                {"fullName":"Nora Manager","email":"nora.manager@example.com","mobileNumber":"+1 (415) 555-0134","password":"strong-pass-25","role":"MANAGER"}
+                {"fullName":"Nora Manager","email":"nora.manager@example.com","mobileNumber":"+1 (415) 555-0134","password":"strong-pass-25","role":"MANAGER","managerInviteCode":"test-manager-invite"}
                 """;
         mvc.perform(post("/api/auth/register").contentType(MediaType.APPLICATION_JSON).content(registration))
                 .andExpect(status().isCreated())
@@ -133,7 +149,7 @@ class AccessRequestApiTest {
                 .andExpect(status().isBadRequest());
 
         mvc.perform(post("/api/auth/register").contentType(MediaType.APPLICATION_JSON)
-                        .content("{\"fullName\":\"Another Manager\",\"email\":\"NORA.MANAGER@example.com\",\"mobileNumber\":\"+14155550135\",\"password\":\"strong-pass-25\",\"role\":\"MANAGER\"}"))
+                        .content("{\"fullName\":\"Another Manager\",\"email\":\"NORA.MANAGER@example.com\",\"mobileNumber\":\"+14155550135\",\"password\":\"strong-pass-25\",\"role\":\"MANAGER\",\"managerInviteCode\":\"test-manager-invite\"}"))
                 .andExpect(status().isBadRequest());
     }
 
@@ -144,7 +160,45 @@ class AccessRequestApiTest {
                 .andExpect(status().isBadRequest());
     }
 
+        @Test
+        void managerRegistration_requiresInviteCode() throws Exception {
+                mvc.perform(post("/api/auth/register").contentType(MediaType.APPLICATION_JSON)
+                                                .content("{\"fullName\":\"Uninvited Manager\",\"email\":\"uninvited@example.com\",\"mobileNumber\":\"+14155550193\",\"password\":\"manager-pass-25\",\"role\":\"MANAGER\"}"))
+                                .andExpect(status().isBadRequest());
+        }
+
+        @Test
+        @org.springframework.security.test.context.support.WithAnonymousUser
+        void requestApi_rejectsAnonymousAccess() throws Exception {
+                mvc.perform(get("/api/requests")).andExpect(status().isUnauthorized());
+        }
+
+            @Test
+            @org.springframework.security.test.context.support.WithMockUser(username = "employee@example.com", roles = "EMPLOYEE")
+            void employeeCanOnlyReadOwnRequests_andCannotApprove() throws Exception {
+                UserAccount employee = users.save(new UserAccount("employee@example.com", "Employee Owner", "+14155550201", "unused", UserRole.EMPLOYEE));
+                UserAccount manager = users.findByEmailIgnoreCase("test.manager@example.com").orElseThrow();
+                requestService.create(manager.getFullName(), SystemName.AWS, "Manager-owned request", manager.getId());
+
+                String requestBody = "{\"employeeName\":\"Impersonated Name\",\"system\":\"GITHUB\",\"reason\":\"My access request\"}";
+                String response = mvc.perform(post("/api/requests").contentType(MediaType.APPLICATION_JSON).content(requestBody))
+                        .andExpect(status().isCreated())
+                        .andExpect(jsonPath("$.employeeName").value("Employee Owner"))
+                        .andReturn().getResponse().getContentAsString();
+                long id = mapper.readTree(response).get("id").asLong();
+
+                mvc.perform(get("/api/requests"))
+                        .andExpect(status().isOk())
+                        .andExpect(jsonPath("$[0].id").value(id))
+                        .andExpect(jsonPath("$[1]").doesNotExist());
+
+                mvc.perform(post("/api/requests/" + id + "/approve").contentType(MediaType.APPLICATION_JSON)
+                                .content("{\"managerName\":\"Employee Owner\"}"))
+                        .andExpect(status().isForbidden());
+            }
+
     @Test
+        @org.springframework.security.test.context.support.WithMockUser(username = "profile.owner@example.com", roles = "EMPLOYEE")
     void updateProfile_requiresCurrentPassword_andSavesDetailsAndPhoto() throws Exception {
         String registration = """
                 {"fullName":"Profile Owner","email":"profile.owner@example.com","mobileNumber":"+14155550191","password":"profile-pass-25","role":"EMPLOYEE"}
@@ -177,4 +231,16 @@ class AccessRequestApiTest {
                 .andExpect(status().isOk())
                 .andExpect(jsonPath("$.profilePhoto").value(photo));
     }
+
+        @Test
+        @org.springframework.security.test.context.support.WithMockUser(username = "profile.owner@example.com", roles = "EMPLOYEE")
+        void employeeProfile_cannotBeReadOrChangedAsAnotherAccount() throws Exception {
+                users.save(new UserAccount("profile.owner@example.com", "Profile Owner", "+14155550198",
+                        new org.springframework.security.crypto.bcrypt.BCryptPasswordEncoder().encode("password"), UserRole.EMPLOYEE));
+                UserAccount other = users.save(new UserAccount("other@example.com", "Other Person", "+14155550199", "unused", UserRole.EMPLOYEE));
+                mvc.perform(put("/api/auth/profile/" + other.getId()).queryParam("role", "EMPLOYEE")
+                                                .contentType(MediaType.APPLICATION_JSON)
+                                                .content("{\"fullName\":\"Changed\",\"email\":\"other@example.com\",\"mobileNumber\":\"+14155550199\",\"currentPassword\":\"password\"}"))
+                                .andExpect(status().isBadRequest());
+        }
 }

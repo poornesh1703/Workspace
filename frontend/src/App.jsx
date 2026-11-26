@@ -6,6 +6,7 @@ import {
   rejectRequest,
   login,
   register,
+  logout,
   updateProfile,
 } from "./api.js";
 
@@ -65,6 +66,16 @@ export default function App() {
   }
 
   useEffect(() => { refresh(); }, []);
+
+  useEffect(() => {
+    const handleExpiredSession = () => {
+      localStorage.removeItem("vigilstack-session");
+      setSession(null);
+      setSection("overview");
+    };
+    window.addEventListener("vigilstack-session-expired", handleExpiredSession);
+    return () => window.removeEventListener("vigilstack-session-expired", handleExpiredSession);
+  }, []);
 
   async function run(action) {
     setError("");
@@ -173,7 +184,7 @@ export default function App() {
             <Avatar name={session.fullName} photo={session.profilePhoto} role={session.role} />
             <span className="profile-trigger-copy"><strong>{session.fullName ?? session.username ?? session.email}</strong><small>{role} · Edit profile</small></span>
           </button>
-          <button className="signout-button" onClick={() => { localStorage.removeItem("vigilstack-session"); setSession(null); setSection("overview"); }} aria-label="Logout" title="Logout"><Icon name="logout" size={17} /><span>Logout</span></button>
+          <button className="signout-button" onClick={async () => { try { await logout(); } finally { localStorage.removeItem("vigilstack-session"); setSession(null); setSection("overview"); } }} aria-label="Logout" title="Logout"><Icon name="logout" size={17} /><span>Logout</span></button>
         </div>
       </aside>
 
@@ -202,7 +213,7 @@ export default function App() {
         {role === "Manager" && (
           <div className="manager-strip">
             <div><span className="online-dot"/><strong>Manager workspace</strong></div>
-            <label>Manager name<input value={managerName} onChange={(e) => setManagerName(e.target.value)} placeholder="Required for decisions" /></label>
+            <label>Signed-in manager<input value={session.fullName ?? ""} readOnly aria-readonly="true" /></label>
           </div>
         )}
 
@@ -221,7 +232,7 @@ export default function App() {
             <div className="empty-state"><div className="empty-icon"><Icon name="inbox" size={24}/></div><h3>No requests found</h3><p>{requests.length ? "Try changing your search or filter." : "Create the first access request to begin."}</p></div>
           ) : (
             <div className="request-list">
-              {visibleRequests.map((request) => <RequestCard key={request.id} request={request} isManager={role === "Manager"} managerName={managerName} onApprove={() => run(() => approveRequest(request.id, managerName))} onReject={(reason) => run(() => rejectRequest(request.id, managerName, reason))} />)}
+              {visibleRequests.map((request) => <RequestCard key={request.id} request={request} isManager={role === "Manager"} managerName={managerName} onApprove={() => run(() => approveRequest(request.id))} onReject={(reason) => run(() => rejectRequest(request.id, reason))} />)}
             </div>
           )}
         </section>
@@ -235,8 +246,8 @@ export default function App() {
       </main>
 
       {showForm && role === "Employee" && (
-        <NewRequestModal onClose={() => setShowForm(false)} onSubmit={async (name, system, reason) => {
-          const ok = await run(() => createRequest(name, system, reason));
+        <NewRequestModal employeeName={session.fullName} onClose={() => setShowForm(false)} onSubmit={async (system, reason) => {
+          const ok = await run(() => createRequest(system, reason));
           if (ok) setShowForm(false);
         }} />
       )}
@@ -404,8 +415,7 @@ function StatCard({ label, value, icon, tone }) {
   return <article className="stat-card"><div className={`stat-icon ${tone}`}><Icon name={icon} size={19}/></div><div><p>{label}</p><strong>{value}</strong></div></article>;
 }
 
-function NewRequestModal({ onClose, onSubmit }) {
-  const [name, setName] = useState("");
+function NewRequestModal({ employeeName, onClose, onSubmit }) {
   const [system, setSystem] = useState("GITHUB");
   const [reason, setReason] = useState("");
 
@@ -413,11 +423,11 @@ function NewRequestModal({ onClose, onSubmit }) {
     <section className="modal" role="dialog" aria-modal="true" aria-labelledby="new-request-title">
       <div className="modal-header"><div><p className="eyebrow">NEW ACCESS REQUEST</p><h2 id="new-request-title">Request system access</h2></div><button className="icon-button" onClick={onClose} aria-label="Close"><Icon name="x" /></button></div>
       <div className="form-grid">
-        <label className="field">Your name<input value={name} onChange={(e) => setName(e.target.value)} placeholder="e.g. Alex Morgan" /></label>
+        <label className="field">Your name<input value={employeeName ?? ""} readOnly /></label>
         <label className="field">System<select value={system} onChange={(e) => setSystem(e.target.value)}>{SYSTEMS.map((s) => <option key={s.value} value={s.value}>{s.label}</option>)}</select></label>
         <label className="field field-full">Business reason<textarea rows={4} value={reason} onChange={(e) => setReason(e.target.value)} placeholder="Describe why this access is needed" /></label>
       </div>
-      <div className="modal-actions"><button className="text-button" onClick={onClose}>Cancel</button><button className="primary-button" onClick={() => onSubmit(name, system, reason)}>Submit request</button></div>
+      <div className="modal-actions"><button className="text-button" onClick={onClose}>Cancel</button><button className="primary-button" onClick={() => onSubmit(system, reason)}>Submit request</button></div>
     </section>
   </div>;
 }
@@ -453,6 +463,7 @@ function AuthPage({ onAuthenticated }) {
   const [fullName, setFullName] = useState("");
   const [email, setEmail] = useState("");
   const [mobileNumber, setMobileNumber] = useState("");
+  const [managerInviteCode, setManagerInviteCode] = useState("");
   const [password, setPassword] = useState("");
   const [error, setError] = useState("");
   const [busy, setBusy] = useState(false);
@@ -464,7 +475,7 @@ function AuthPage({ onAuthenticated }) {
     try {
       const account = mode === "login"
         ? await login(fullName, email, password, role)
-        : await register(fullName, email, mobileNumber, password, role);
+        : await register(fullName, email, mobileNumber, password, role, managerInviteCode);
       onAuthenticated(account);
     } catch (e) {
       setError(e.message);
@@ -489,6 +500,7 @@ function AuthPage({ onAuthenticated }) {
           <label className="field">Email<input type="email" autoComplete="email" maxLength={254} value={email} onChange={(e) => setEmail(e.target.value)} placeholder="you@example.com" required /></label>
           {mode === "register" && <>
             <label className="field">Mobile number<input type="tel" autoComplete="tel" maxLength={24} value={mobileNumber} onChange={(e) => setMobileNumber(e.target.value)} placeholder="+1 415 555 0134" required /></label>
+            {role === "MANAGER" && <label className="field">Manager invitation code<input type="password" autoComplete="off" value={managerInviteCode} onChange={(e) => setManagerInviteCode(e.target.value)} placeholder="Enter your invitation code" required /></label>}
           </>}
           <label className="field">Password<input type="password" autoComplete={mode === "login" ? "current-password" : "new-password"} minLength={mode === "register" ? 8 : undefined} maxLength={mode === "register" ? 72 : undefined} value={password} onChange={(e) => setPassword(e.target.value)} placeholder={mode === "register" ? "At least 8 characters" : "Enter your password"} required /></label>
           {error && <div className="auth-error" role="alert">{error}</div>}

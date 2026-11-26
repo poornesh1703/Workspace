@@ -17,13 +17,18 @@ public class AccessRequestService {
     }
 
     @Transactional
-    public AccessRequest create(String employeeName, SystemName system, String reason) {
-        return repository.save(new AccessRequest(employeeName.trim(), system, reason.trim()));
+    public AccessRequest create(String employeeName, SystemName system, String reason, Long requesterId) {
+        return repository.save(new AccessRequest(employeeName.trim(), system, reason.trim(), requesterId));
     }
 
     @Transactional(readOnly = true)
     public List<AccessRequest> list() {
         return repository.findAllByOrderByCreatedAtDesc();
+    }
+
+    @Transactional(readOnly = true)
+    public List<AccessRequest> listForEmployee(Long requesterId) {
+        return repository.findAllByRequesterIdOrderByCreatedAtDesc(requesterId);
     }
 
     @Transactional

@@ -6,4 +6,5 @@ import org.springframework.data.jpa.repository.JpaRepository;
 
 public interface AccessRequestRepository extends JpaRepository<AccessRequest, Long> {
     List<AccessRequest> findAllByOrderByCreatedAtDesc();   // newest first
+    List<AccessRequest> findAllByRequesterIdOrderByCreatedAtDesc(Long requesterId);
 }

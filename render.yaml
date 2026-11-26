@@ -1,0 +1,39 @@
+services:
+  - type: web
+    name: vigilstack-access-requests
+    runtime: docker
+    plan: free
+    healthCheckPath: /actuator/health
+    envVars:
+      - key: DB_HOST
+        fromDatabase:
+          name: vigilstack-access-db
+          property: host
+      - key: DB_PORT
+        fromDatabase:
+          name: vigilstack-access-db
+          property: port
+      - key: DB_NAME
+        fromDatabase:
+          name: vigilstack-access-db
+          property: database
+      - key: SPRING_DATASOURCE_USERNAME
+        fromDatabase:
+          name: vigilstack-access-db
+          property: user
+      - key: SPRING_DATASOURCE_PASSWORD
+        fromDatabase:
+          name: vigilstack-access-db
+          property: password
+      - key: SPRING_H2_CONSOLE_ENABLED
+        value: "false"
+      - key: SESSION_COOKIE_SECURE
+        value: "true"
+      - key: MANAGER_INVITE_CODE
+        sync: false
+
+databases:
+  - name: vigilstack-access-db
+    plan: free
+    databaseName: vigilstack
+    user: vigilstack

@@ -12,8 +12,17 @@ import jakarta.validation.constraints.Size;
 import java.util.HashMap;
 import java.util.Map;
 import java.util.Locale;
+import java.util.List;
 import org.springframework.http.HttpStatus;
-import org.springframework.security.crypto.bcrypt.BCryptPasswordEncoder;
+import org.springframework.security.crypto.password.PasswordEncoder;
+import org.springframework.security.authentication.UsernamePasswordAuthenticationToken;
+import org.springframework.security.core.authority.SimpleGrantedAuthority;
+import org.springframework.security.core.context.SecurityContext;
+import org.springframework.security.core.context.SecurityContextHolder;
+import org.springframework.security.web.context.HttpSessionSecurityContextRepository;
+import org.springframework.beans.factory.annotation.Value;
+import jakarta.servlet.http.HttpServletRequest;
+import jakarta.servlet.http.HttpSession;
 import org.springframework.web.bind.annotation.*;
 
 @RestController
@@ -39,7 +48,8 @@ public class AuthController {
         @NotBlank(message = "Password is required.")
         @Size(min = 8, max = 72, message = "Password must be between 8 and 72 characters.")
         String password,
-        @NotNull(message = "Choose an account type.") UserRole role) { }
+        @NotNull(message = "Choose an account type.") UserRole role,
+        String managerInviteCode) { }
 
     public record ProfileUpdate(
         @NotBlank(message = "Name is required.")
@@ -58,19 +68,28 @@ public class AuthController {
         String profilePhoto) { }
 
     private final UserAccountRepository users;
-    private final BCryptPasswordEncoder encoder = new BCryptPasswordEncoder();
+    private final PasswordEncoder encoder;
+    private final String managerInviteCode;
 
-    public AuthController(UserAccountRepository users) {
+    public AuthController(UserAccountRepository users,
+                          @Value("${app.auth.manager-invite-code:}") String managerInviteCode,
+                          PasswordEncoder encoder) {
         this.users = users;
+        this.managerInviteCode = managerInviteCode;
+        this.encoder = encoder;
     }
 
     @PostMapping("/register")
     @ResponseStatus(HttpStatus.CREATED)
-    public Map<String, String> register(@Valid @RequestBody Registration body) {
+    public Map<String, String> register(@Valid @RequestBody Registration body, HttpServletRequest request) {
         String fullName = body.fullName().trim();
         String email = body.email().trim().toLowerCase(Locale.ROOT);
         String mobileNumber = normalizeMobileNumber(body.mobileNumber());
         UserRole role = body.role();
+        if (role == UserRole.MANAGER && (managerInviteCode.isBlank()
+                || !managerInviteCode.equals(body.managerInviteCode()))) {
+            throw new IllegalArgumentException("Manager registration requires a valid invitation code.");
+        }
         if (users.findByEmailIgnoreCase(email).isPresent()) {
             throw new IllegalArgumentException("That email address is already registered.");
         }
@@ -78,11 +97,12 @@ public class AuthController {
             throw new IllegalArgumentException("That mobile number is already registered.");
         }
         UserAccount user = users.save(new UserAccount(email, fullName, mobileNumber, encoder.encode(body.password()), role));
+        establishSession(user, request);
         return profileResponse(user);
     }
 
     @PostMapping("/login")
-    public Map<String, String> login(@Valid @RequestBody LoginCredentials body) {
+    public Map<String, String> login(@Valid @RequestBody LoginCredentials body, HttpServletRequest request) {
         UserRole role = body.role() == null ? UserRole.EMPLOYEE : body.role();
         UserAccount user = users.findByEmailIgnoreCase(body.email().trim())
             .filter(account -> account.getRole() == role)
@@ -93,13 +113,25 @@ public class AuthController {
         if (!encoder.matches(body.password(), user.getPasswordHash())) {
             throw new IllegalArgumentException("Incorrect password.");
         }
+        establishSession(user, request);
         return profileResponse(user);
+    }
+
+    @PostMapping("/logout")
+    @ResponseStatus(HttpStatus.NO_CONTENT)
+    public void logout(HttpServletRequest request) {
+        SecurityContextHolder.clearContext();
+        HttpSession session = request.getSession(false);
+        if (session != null) session.invalidate();
     }
 
     @PutMapping("/profile/{id}")
     public Map<String, String> updateProfile(@PathVariable Long id, @RequestParam UserRole role,
-                                             @Valid @RequestBody ProfileUpdate body) {
-        UserAccount user = users.findByIdAndRole(id, role)
+                                             @Valid @RequestBody ProfileUpdate body,
+                                             org.springframework.security.core.Authentication authentication,
+                                             HttpServletRequest request) {
+        UserAccount user = users.findByEmailIgnoreCase(authentication.getName())
+            .filter(account -> account.getId().equals(id) && account.getRole() == role)
             .orElseThrow(() -> new IllegalArgumentException("Account not found."));
         if (!encoder.matches(body.currentPassword(), user.getPasswordHash())) {
             throw new IllegalArgumentException("Current password is incorrect.");
@@ -117,6 +149,7 @@ public class AuthController {
 
         user.updateProfile(fullName, email, mobileNumber, body.profilePhoto());
         users.save(user);
+        establishSession(user, request);
         return profileResponse(user);
     }
 
@@ -129,6 +162,16 @@ public class AuthController {
         response.put("role", user.getRole().name());
         if (user.getProfilePhoto() != null) response.put("profilePhoto", user.getProfilePhoto());
         return response;
+    }
+
+    private void establishSession(UserAccount user, HttpServletRequest request) {
+        if (request.getSession(false) != null) request.changeSessionId();
+        var authentication = new UsernamePasswordAuthenticationToken(
+                user.getEmail(), null, List.of(new SimpleGrantedAuthority("ROLE_" + user.getRole().name())));
+        SecurityContext context = SecurityContextHolder.createEmptyContext();
+        context.setAuthentication(authentication);
+        SecurityContextHolder.setContext(context);
+        request.getSession(true).setAttribute(HttpSessionSecurityContextRepository.SPRING_SECURITY_CONTEXT_KEY, context);
     }
 
     private String normalizeMobileNumber(String value) {
